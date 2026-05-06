@@ -22,7 +22,7 @@ app = FastAPI(title="Trading & Investing Platform")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=os.getenv("ALLOWED_ORIGINS", "*").split(","),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -384,7 +384,7 @@ def compute_market_context() -> dict:
                 "change_1m": round(change_1m, 2),
             }
             scores.append(1 if trend == "bullish" else -1 if trend == "bearish" else 0)
-        except:
+        except Exception:
             result["indices"][ticker] = {"name": name, "price": None, "trend": "unknown", "change_1m": None}
 
     avg = sum(scores) / len(scores) if scores else 0
@@ -416,12 +416,13 @@ def build_chart_data(df: pd.DataFrame, sr: dict) -> dict:
 def analyze_fundamentals(ticker: str) -> dict:
     try:
         info = yf.Ticker(ticker).info
-    except:
+    except Exception:
         return {}
 
     result = {}
     result["sector"] = info.get("sector", "N/A")
     result["industry"] = info.get("industry", "N/A")
+    result["short_name"] = info.get("shortName", ticker)
     result["market_cap"] = info.get("marketCap", 0)
     result["pe_ratio"] = info.get("trailingPE")
     result["forward_pe"] = info.get("forwardPE")
@@ -529,7 +530,7 @@ def analyze(ticker: str = Query(...)):
 
     return {
         "ticker": ticker,
-        "company_name": yf.Ticker(ticker).info.get("shortName", ticker),
+        "company_name": fundamentals.get("short_name", ticker),
         "current_price": price,
         "timestamp": datetime.now().isoformat(),
         "trend": trend,
@@ -606,7 +607,7 @@ def screener(
                 continue
 
             stocks.append(stock)
-        except:
+        except Exception:
             continue
 
     stocks.sort(key=lambda x: x["score"], reverse=True)
@@ -662,7 +663,7 @@ def analyze_portfolio():
                 "trend": analysis["trend"],
                 "signal": analysis["sentiment"]["signal"],
             })
-        except:
+        except Exception:
             continue
     return {"holdings": results}
 
@@ -701,7 +702,7 @@ def check_alerts():
                 a["triggered_price"] = round(current, 2)
                 a["triggered_at"] = datetime.now().isoformat()
                 triggered.append(a)
-        except:
+        except Exception:
             pass
     save_json(ALERTS_FILE, alerts)
     return {"triggered": triggered}

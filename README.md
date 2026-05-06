@@ -1,4 +1,4 @@
-<<<<<<< HEAD
+
 # Swing Trading Analyzer
 
 A web app for probabilistic swing trading technical analysis.
@@ -62,6 +62,4 @@ Frontend runs at `http://localhost:3000`
 ## Disclaimer
 
 This tool provides probabilistic technical analysis for informational purposes only. It is not financial advice. Always do your own research and consult a licensed financial advisor before making investment decisions.
-=======
-# swing-trading-analyzer
->>>>>>> 133510830027282babc3380ad8026b0d95183e0c
+
