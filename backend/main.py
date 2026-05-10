@@ -32,7 +32,18 @@ WATCHLIST_TICKERS = [
     "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "TSLA", "META", "NFLX",
     "AMD", "CRM", "AVGO", "ORCL", "COST", "JPM", "V", "JNJ",
     "WMT", "PG", "UNH", "HD", "DIS", "ADBE", "PYPL", "INTC",
-    "BTC-USD", "ETH-USD", "SPY", "QQQ", "IWM", "VOO"
+    "BTC-USD", "ETH-USD", "SOL-USD", "XRP-USD", "DOGE-USD", "ADA-USD",
+    "SPY", "QQQ", "IWM", "VOO", "VTI", "DIA", "XLF", "XLE", "XLK",
+    "XLV", "XLI", "XLP", "XLU", "XLY", "XLB", "XLRE",
+    "BA", "CAT", "CSCO", "CVX", "DOW", "GS", "HON", "IBM", "KO",
+    "MCD", "MMM", "MRK", "NKE", "PFE", "RTX", "TRV", "AXP", "GE",
+    "T", "VZ", "WFC", "C", "BAC", "ABNB", "DASH", "SQ", "SHOP",
+    "SNAP", "UBER", "LYFT", "PINS", "ZM", "CRWD", "DDOG", "NET",
+    "PLTR", "SOFI", "RIVN", "LCID", "MRNA", "BNTX", "ABBV", "LLY",
+    "NVO", "TMO", "DHR", "QCOM", "TXN", "MU", "ASML", "AMAT",
+    "LRCX", "KLAC", "PANW", "FTNT", "NOW", "WDAY", "TEAM", "PATH",
+    "TOST", "CPNG", "MELI", "SE", "BABA", "JD", "NIO", "XPEV",
+    "F", "GM", "TSM", "ARM", "INTC", "UBER",
 ]
 
 PORTFOLIO_FILE = os.path.join(os.path.dirname(__file__), "portfolio.json")
@@ -49,6 +60,11 @@ def load_json(path):
 def save_json(path, data):
     with open(path, "w") as f:
         json.dump(data, f, indent=2)
+
+
+def sanitize_ticker(ticker: str) -> str:
+    ticker = ticker.strip().upper().replace(".", "-")
+    return ticker
 
 
 def fetch_data(ticker: str, days: int = 400) -> pd.DataFrame:
@@ -482,7 +498,7 @@ def detect_volume_spike(df: pd.DataFrame) -> bool:
 
 @app.get("/analyze")
 def analyze(ticker: str = Query(...)):
-    ticker = ticker.strip().upper()
+    ticker = sanitize_ticker(ticker)
     if not ticker:
         raise HTTPException(status_code=400, detail="Ticker is required")
 
@@ -556,11 +572,13 @@ def analyze(ticker: str = Query(...)):
 @app.get("/screener")
 def screener(
     preset: str = Query("all", description="Preset: all, strong_buy, growth, momentum, value"),
+    ticker: Optional[str] = Query(None, description="Specific ticker to analyze"),
 ):
     stocks = []
-    for ticker in WATCHLIST_TICKERS:
+    tickers_to_scan = [sanitize_ticker(ticker)] if ticker else WATCHLIST_TICKERS
+    for t in tickers_to_scan:
         try:
-            df = fetch_data(ticker, days=250)
+            df = fetch_data(t, days=250)
             if len(df) < 50:
                 continue
             df["ema20"] = calc_ema(df["Close"], 20)
@@ -576,14 +594,14 @@ def screener(
             macd = calc_macd(df["Close"])
             bb = calc_bollinger_bands(df["Close"])
             stoch = calc_stochastic(df)
-            fundamentals = analyze_fundamentals(ticker)
+            fundamentals = analyze_fundamentals(t)
             sentiment = compute_sentiment(trend, round(latest["rsi"], 2), macd, price, round(latest["ema20"], 2), round(latest["ema50"], 2), round(latest["ema200"], 2), stoch, bb, atr_pct, fundamentals)
 
             returns_3m = round(float((price / df["Close"].iloc[-63] - 1) * 100), 2) if len(df) > 63 else 0.0
             vol_spike = detect_volume_spike(df)
 
             stock = {
-                "ticker": ticker, "price": price, "trend": trend,
+                "ticker": t, "price": price, "trend": trend,
                 "signal": sentiment["signal"], "score": sentiment["score"],
                 "confidence": sentiment["confidence"],
                 "rsi": round(latest["rsi"], 1),

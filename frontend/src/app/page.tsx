@@ -112,10 +112,12 @@ export default function Home() {
     finally { setLoading(false); }
   };
 
-  const runScreener = async (p: string) => {
+  const runScreener = async (p: string, t?: string) => {
     setPreset(p); setScreenerLoading(true);
     try {
-      const r = await fetch(`${API}/screener?preset=${p}`);
+      const params = new URLSearchParams({ preset: p });
+      if (t) params.set("ticker", t);
+      const r = await fetch(`${API}/screener?${params}`);
       const d = await r.json(); setScreenerStocks(d.stocks || []);
     } catch { setError("Screener failed"); }
     finally { setScreenerLoading(false); }
@@ -491,10 +493,21 @@ function FundamentalsTab({ result }: { result: Result }) {
 
 function ScreenerTab({ stocks, loading, preset, runScreener, analyze }: {
   stocks: ScreenerStock[]; loading: boolean; preset: string;
-  runScreener: (p: string) => void; analyze: (t: string) => void;
+  runScreener: (p: string, t?: string) => void; analyze: (t: string) => void;
 }) {
+  const [searchTicker, setSearchTicker] = useState("");
   return (
     <div className="space-y-3">
+      <div className="flex gap-2">
+        <input type="text" value={searchTicker} onChange={e => setSearchTicker(e.target.value.toUpperCase())}
+          onKeyDown={e => e.key === "Enter" && searchTicker && analyze(searchTicker)}
+          placeholder="Search any ticker (e.g. BRK-B, RIVN, SOFI)..."
+          className="flex-1 bg-slate-900 border border-slate-800 rounded-lg px-3 py-1.5 text-white text-xs placeholder-slate-600 focus:outline-none focus:border-blue-500" />
+        <button onClick={() => { if (searchTicker) runScreener("all", searchTicker); }}
+          className="bg-blue-600 hover:bg-blue-700 text-white px-3 py-1.5 rounded text-xs font-medium">
+          Search
+        </button>
+      </div>
       <div className="flex gap-1.5 flex-wrap">
         {PRESETS.map(p => (
           <button key={p.id} onClick={() => runScreener(p.id)}
