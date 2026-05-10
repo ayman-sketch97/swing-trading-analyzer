@@ -7,6 +7,20 @@ from datetime import datetime, timedelta
 from typing import Optional
 import json
 import os
+import time
+
+data_cache = {}
+CACHE_TTL = 300
+
+
+def get_cached(key: str, fetch_fn, ttl: int = CACHE_TTL):
+    now = time.time()
+    if key in data_cache and (now - data_cache[key]["ts"]) < ttl:
+        return data_cache[key]["data"]
+    result = fetch_fn()
+    data_cache[key] = {"data": result, "ts": now}
+    return result
+
 
 def clean_types(obj):
     if isinstance(obj, dict):
@@ -68,6 +82,11 @@ def sanitize_ticker(ticker: str) -> str:
 
 
 def fetch_data(ticker: str, days: int = 400) -> pd.DataFrame:
+    cache_key = f"fetch_data_{ticker}_{days}"
+    return get_cached(cache_key, lambda: _fetch_data(ticker, days))
+
+
+def _fetch_data(ticker: str, days: int = 400) -> pd.DataFrame:
     stock = yf.Ticker(ticker)
     end = datetime.now()
     start = end - timedelta(days=days)
@@ -430,6 +449,10 @@ def build_chart_data(df: pd.DataFrame, sr: dict) -> dict:
 
 
 def analyze_fundamentals(ticker: str) -> dict:
+    return get_cached(f"fundamentals_{ticker}", lambda: _analyze_fundamentals(ticker), ttl=600)
+
+
+def _analyze_fundamentals(ticker: str) -> dict:
     try:
         info = yf.Ticker(ticker).info
     except Exception:

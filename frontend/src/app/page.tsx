@@ -99,17 +99,29 @@ export default function Home() {
     try { const r = await fetch(`${API}/alerts/check`, { method: "POST" }); const d = await r.json(); fetchAlerts(); } catch {}
   };
 
-  const analyze = async (t?: string) => {
+  const analyze = async (t?: string, retries = 2) => {
     const s = (t || ticker).trim().toUpperCase();
     if (!s) return;
     setLoading(true); setError(""); setTab("overview");
-    try {
-      const r = await fetch(`${API}/analyze?ticker=${encodeURIComponent(s)}`);
-      if (!r.ok) { const e = await r.json(); throw new Error(e.detail || "Failed"); }
-      const d = await r.json();
-      setResult(d); setTicker(s);
-    } catch (e: any) { setError(e.message); }
-    finally { setLoading(false); }
+    for (let attempt = 0; attempt <= retries; attempt++) {
+      try {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 60000);
+        const r = await fetch(`${API}/analyze?ticker=${encodeURIComponent(s)}`, { signal: controller.signal });
+        clearTimeout(timeout);
+        if (!r.ok) { const e = await r.json(); throw new Error(e.detail || "Failed"); }
+        const d = await r.json();
+        setResult(d); setTicker(s);
+        return;
+      } catch (e: any) {
+        if (attempt < retries && (e.name === "AbortError" || e.message?.includes("Failed to fetch"))) {
+          await new Promise(r => setTimeout(r, 3000));
+          continue;
+        }
+        setError(e.message || "Load failed");
+      }
+    }
+    setLoading(false);
   };
 
   const runScreener = async (p: string, t?: string) => {
