@@ -20,11 +20,12 @@ export default function PriceChart({ data }: { data: Record<string, unknown> }) 
 
     if (chartRef.current) chartRef.current.remove();
 
+    const isMobile = containerRef.current.clientWidth < 640;
     const chart = createChart(containerRef.current, {
       layout: { background: { type: ColorType.Solid, color: "#020617" }, textColor: "#64748b" },
       grid: { vertLines: { color: "#0f172a" }, horzLines: { color: "#0f172a" } },
       width: containerRef.current.clientWidth,
-      height: 350,
+      height: isMobile ? 250 : 350,
       timeScale: { borderColor: "#1e293b" },
       rightPriceScale: { borderColor: "#1e293b" },
     });
@@ -55,10 +56,18 @@ export default function PriceChart({ data }: { data: Record<string, unknown> }) 
 
     chart.timeScale().fitContent();
 
-    const onResize = () => { if (containerRef.current) chart.applyOptions({ width: containerRef.current.clientWidth }); };
+    let resizeTimer: ReturnType<typeof setTimeout>;
+    const onResize = () => {
+      clearTimeout(resizeTimer);
+      resizeTimer = setTimeout(() => {
+        if (containerRef.current) {
+          chart.applyOptions({ width: containerRef.current.clientWidth });
+        }
+      }, 100);
+    };
     window.addEventListener("resize", onResize);
 
-    return () => { window.removeEventListener("resize", onResize); chart.remove(); chartRef.current = null; };
+    return () => { clearTimeout(resizeTimer); window.removeEventListener("resize", onResize); chart.remove(); chartRef.current = null; };
   }, [data]);
 
   return <div ref={containerRef} className="rounded-lg overflow-hidden border border-slate-800" />;

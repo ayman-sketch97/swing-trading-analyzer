@@ -207,105 +207,129 @@ def determine_trend(price, ema20, ema50, ema200) -> str:
     return "bullish" if price > ema50 else "bearish"
 
 
+INDICATOR_TOOLTIPS = {
+    "rsi": "RSI (Relative Strength Index) measures speed/change of price movements. Over 70 = overbought, under 30 = oversold.",
+    "macd": "MACD shows relationship between two moving averages. Positive histogram = bullish momentum, negative = bearish.",
+    "ema": "Exponential Moving Averages smooth price data. 20/50/200 day EMAs show short, medium, and long-term trends.",
+    "bb": "Bollinger Bands measure volatility. Price touching upper band = overextended, lower band = potential bounce.",
+    "stoch": "Stochastic Oscillator compares close price to price range. Over 80 = overbought, under 20 = oversold.",
+    "atr": "ATR (Average True Range) measures market volatility. Higher values = more volatile.",
+    "volume": "Volume spikes indicate strong institutional interest. Can confirm breakouts or reversals.",
+}
+
+
 def compute_sentiment(trend, rsi, macd, price, ema20, ema50, ema200, stoch, bb, atr_pct, fundamentals) -> dict:
     score = 0
-    reasons = []
     tech_reasons = []
     fund_reasons = []
 
-    if price > ema20 > ema50 > ema200:
-        score += 25
-        tech_reasons.append("EMAs aligned bullishly (20>50>200)")
-    elif price > ema50 > ema200:
-        score += 15
-        tech_reasons.append("Price above key EMAs")
-    elif price < ema200:
+    ema_aligned = price > ema20 > ema50 > ema200
+    ema_bearish = price < ema50 and ema20 < ema50
+    macd_bullish = macd["histogram"] > 0
+    rsi_oversold = rsi < 25
+    rsi_overbought = rsi > 75
+    stoch_oversold = stoch["k"] < 20
+    stoch_overbought = stoch["k"] > 80
+    bb_lower_band = price < bb["lower"]
+    bb_upper_band = price > bb["upper"]
+    volume_confirms = atr_pct > 0.015
+
+    if ema_aligned:
+        score += 20
+        tech_reasons.append(f"Bullish alignment: 20EMA ({ema20}) > 50EMA ({ema50}) > 200EMA ({ema200})")
+    elif ema_bearish:
         score -= 20
-        tech_reasons.append("Price below 200-day EMA")
-
-    if macd["histogram"] > 0:
-        score += 10
-        tech_reasons.append("MACD histogram positive (momentum bullish)")
-    else:
-        score -= 10
-        tech_reasons.append("MACD histogram negative (momentum bearish)")
-
-    if macd["macd"] > macd["signal"]:
+        tech_reasons.append(f"Bearish alignment: price below 50EMA ({ema50})")
+    elif price > ema200:
         score += 5
-        tech_reasons.append("MACD line above signal line")
+        tech_reasons.append("Price above 200-day EMA (long-term uptrend)")
     else:
-        score -= 5
-
-    if rsi < 30:
-        score += 15
-        tech_reasons.append("RSI oversold (<30) - potential reversal")
-    elif rsi > 70:
-        score -= 15
-        tech_reasons.append("RSI overbought (>70) - potential pullback")
-    elif 40 <= rsi <= 60:
-        tech_reasons.append("RSI in neutral zone")
-
-    if stoch["k"] < 20:
-        score += 10
-        tech_reasons.append("Stochastic oversold")
-    elif stoch["k"] > 80:
         score -= 10
-        tech_reasons.append("Stochastic overbought")
+        tech_reasons.append("Price below 200-day EMA (long-term downtrend)")
 
-    if price < bb["lower"]:
-        score += 10
-        tech_reasons.append("Price below lower Bollinger Band")
-    elif price > bb["upper"]:
-        score -= 10
-        tech_reasons.append("Price above upper Bollinger Band")
+    if macd_bullish and macd["macd"] > macd["signal"]:
+        score += 12
+        tech_reasons.append(f"MACD bullish: line ({macd['macd']}) > signal ({macd['signal']}), histogram positive ({macd['histogram']})")
+    elif macd_bullish:
+        score += 6
+        tech_reasons.append("MACD histogram positive (short-term momentum up)")
+    else:
+        score -= 8
+        tech_reasons.append("MACD histogram negative (momentum down)")
 
-    if atr_pct < 0.02:
-        tech_reasons.append("Low volatility environment")
-    elif atr_pct > 0.04:
-        tech_reasons.append("High volatility environment")
+    if rsi_oversold:
+        score += 12
+        tech_reasons.append(f"RSI deeply oversold ({rsi}) — potential bounce opportunity")
+    elif rsi < 35:
+        score += 6
+        tech_reasons.append(f"RSI approaching oversold ({rsi}) — watch for reversal")
+    elif rsi_overbought:
+        score -= 12
+        tech_reasons.append(f"RSI overbought ({rsi}) — potential pullback risk")
+    elif rsi > 65:
+        score -= 6
+        tech_reasons.append(f"RSI nearing overbought ({rsi})")
+
+    if stoch_oversold:
+        score += 8
+        tech_reasons.append("Stochastic oversold — may reverse up")
+    elif stoch_overbought:
+        score -= 8
+        tech_reasons.append("Stochastic overbought — may reverse down")
+
+    if bb_lower_band:
+        score += 8
+        tech_reasons.append(f"Price near lower Bollinger Band (${bb['lower']}) — potential support bounce")
+    elif bb_upper_band:
+        score -= 8
+        tech_reasons.append(f"Price near upper Bollinger Band (${bb['upper']}) — extended")
+
+    if volume_confirms:
+        tech_reasons.append(f"ATR {atr_pct*100:.1f}% — {'high' if atr_pct > 0.03 else 'moderate'} volatility")
 
     if fundamentals.get("revenue_growth") and fundamentals["revenue_growth"] > 0.15:
-        score += 15
-        fund_reasons.append(f"Strong revenue growth ({fundamentals['revenue_growth']*100:.1f}%)")
+        score += 12
+        fund_reasons.append(f"Revenue growth {fundamentals['revenue_growth']*100:.1f}%")
     elif fundamentals.get("revenue_growth") and fundamentals["revenue_growth"] > 0:
-        score += 5
+        score += 4
         fund_reasons.append("Positive revenue growth")
 
     if fundamentals.get("earnings_growth") and fundamentals["earnings_growth"] > 0.2:
-        score += 15
-        fund_reasons.append(f"Strong earnings growth ({fundamentals['earnings_growth']*100:.1f}%)")
+        score += 12
+        fund_reasons.append(f"Earnings growth {fundamentals['earnings_growth']*100:.1f}%")
+    elif fundamentals.get("earnings_growth") and fundamentals["earnings_growth"] > 0:
+        score += 4
+        fund_reasons.append("Positive earnings growth")
 
     pe = fundamentals.get("pe_ratio")
-    if pe and pe < 20:
-        score += 10
-        fund_reasons.append(f"Attractive valuation (P/E: {pe:.1f})")
-    elif pe and pe > 50:
-        score -= 10
-        fund_reasons.append(f"High valuation (P/E: {pe:.1f})")
+    if pe and 10 < pe < 20:
+        score += 8
+        fund_reasons.append(f"Reasonable P/E ({pe:.1f})")
+    elif pe and pe < 10:
+        score += 4
+        fund_reasons.append(f"Low P/E ({pe:.1f})")
+    elif pe and pe > 40:
+        score -= 8
+        fund_reasons.append(f"Rich valuation (P/E: {pe:.1f})")
 
     de = fundamentals.get("debt_to_equity")
-    if de and de < 0.5:
-        score += 5
-        fund_reasons.append("Low debt levels")
-    elif de and de > 2:
-        score -= 5
-        fund_reasons.append("High debt levels")
-
-    if trend == "bullish":
-        score += 10
-    elif trend == "bearish":
-        score -= 10
+    if de is not None and de < 0.5:
+        score += 4
+        fund_reasons.append("Low debt/equity")
+    elif de is not None and de > 2:
+        score -= 4
+        fund_reasons.append("High debt/equity")
 
     score = max(-100, min(100, score))
-    confidence = min(95, abs(score) + 20)
+    confidence = min(90, max(10, abs(score) + 15))
 
-    if score >= 60:
+    if score >= 70:
         signal, color = "Strong Buy", "#10b981"
-    elif score >= 20:
+    elif score >= 30:
         signal, color = "Buy", "#34d399"
-    elif score >= -20:
+    elif score >= -30:
         signal, color = "Hold", "#f59e0b"
-    elif score >= -60:
+    elif score >= -70:
         signal, color = "Sell", "#f87171"
     else:
         signal, color = "Strong Sell", "#ef4444"
@@ -588,8 +612,26 @@ def analyze(ticker: str = Query(...)):
             "volume_trend": "increasing" if df["Volume"].tail(5).mean() > df["Volume"].tail(20).mean() else "decreasing",
         },
         "chart_data": build_chart_data(df, sr),
+        "tooltips": INDICATOR_TOOLTIPS,
         "disclaimer": "This analysis is for informational purposes only. It is not financial advice. All outputs are based on historical data and technical patterns. Past performance does not guarantee future results. Always do your own research and consult a licensed financial advisor.",
     }
+
+
+@app.get("/analyze/simple")
+def analyze_simple(ticker: str = Query(...)):
+    try:
+        ticker = sanitize_ticker(ticker)
+        df = fetch_data(ticker, days=100)
+        latest = df.iloc[-1]
+        return {
+            "ticker": ticker,
+            "price": round(latest["Close"], 2),
+            "change": round(float((latest["Close"] / df.iloc[-2]["Close"] - 1) * 100), 2),
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/screener")
