@@ -16,7 +16,7 @@ from modules.pattern_detector import detect_consolidation, detect_breakout, dete
 from modules.scoring_engine import compute_stock_score
 from modules.market_regime import check_market_regime, get_market_context
 from modules.crypto_scanner import scan_crypto, CRYPTO_TICKERS, NARRATIVE_MAP
-from modules.portfolio_manager import load_portfolio, save_portfolio, add_position, remove_position, analyze_portfolio
+from modules.portfolio_manager import load_portfolio, save_portfolio, add_position, remove_position, analyze_portfolio, advise_portfolio
 from modules.alert_system import load_alerts, save_alerts, add_alert, check_alerts as check_alerts_fn
 
 
@@ -774,6 +774,21 @@ def analyze_portfolio_endpoint():
         except Exception:
             current_prices[h["ticker"]] = h["entry_price"]
     return analyze_portfolio(current_prices)
+
+
+@app.get("/portfolio/advise")
+def portfolio_advise():
+    portfolio = load_portfolio()
+    current_prices = {}
+    for h in portfolio:
+        try:
+            df = fetch_data(h["ticker"], days=5)
+            if not df.empty:
+                current_prices[h["ticker"]] = float(df["close"].iloc[-1])
+        except Exception:
+            current_prices[h["ticker"]] = h["entry_price"]
+    result = advise_portfolio(current_prices)
+    return result
 
 
 @app.get("/alerts")

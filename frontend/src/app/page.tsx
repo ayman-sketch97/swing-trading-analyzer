@@ -97,6 +97,22 @@ function AnalysisView({ API }: { API: string }) {
   const [chartData, setChartData] = useState<any>(null);
   const [chartLoading, setChartLoading] = useState(false);
   const [activeTF, setActiveTF] = useState("1 day");
+  const [portfolioMsg, setPortfolioMsg] = useState("");
+
+  const addToPortfolio = async () => {
+    if (!r) return;
+    try {
+      const res = await fetch(`${API}/portfolio/add?ticker=${r.ticker}&entry_price=${r.current_price}&quantity=1`, { method: "POST" });
+      if (res.ok) {
+        setPortfolioMsg(`Added ${r.ticker} to portfolio at $${r.current_price}`);
+        setTimeout(() => setPortfolioMsg(""), 3000);
+      } else {
+        setPortfolioMsg("Failed to add to portfolio");
+      }
+    } catch {
+      setPortfolioMsg("Failed to add to portfolio");
+    }
+  };
 
   const analyze = async (t?: string) => {
     const s = (t || ticker).trim().toUpperCase();
@@ -206,7 +222,18 @@ function AnalysisView({ API }: { API: string }) {
               <div className={`text-xl font-bold ${s?.signal === "Strong Buy" ? "text-emerald-400" : s?.signal === "Buy" ? "text-green-400" : s?.signal === "Sell" ? "text-red-400" : "text-amber-400"}`}>{s?.signal || "WAIT"}</div>
               <div className="text-slate-500 text-[10px] mt-0.5">Score: {s?.score ?? "-"} &middot; Conf: {s?.confidence ?? "-"}%</div>
             </div>
+            <button onClick={addToPortfolio}
+              className="bg-emerald-600 hover:bg-emerald-500 text-white px-3 py-2 rounded-xl text-xs font-semibold transition-all duration-200 shadow-lg shadow-emerald-600/20 hover:shadow-emerald-500/30 flex items-center gap-1.5">
+              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 4v16m8-8H4"/></svg>
+              Add to Portfolio
+            </button>
           </div>
+          {portfolioMsg && (
+            <div className="bg-emerald-950/30 border border-emerald-800/50 text-emerald-400 px-4 py-2 rounded-xl text-sm animate-slideDown flex items-center gap-2">
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+              {portfolioMsg}
+            </div>
+          )}
 
           <div className="flex gap-1 bg-slate-900/50 border border-slate-800/50 p-1 rounded-xl w-fit backdrop-blur-sm">
             <button onClick={() => setViewMode("dashboard")}
@@ -350,9 +377,23 @@ function DashboardView({ r, ind, s, ret, regime }: { r: AnalysisResult; ind: any
         <div className={`bg-slate-900/60 rounded-xl p-4 transition-all duration-200 ${r.strategy?.entry_zone && !r.strategy.entry_zone.includes("Wait") ? "border border-emerald-700/50" : "border border-slate-800/50"}`}>
           <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-3 flex items-center gap-2"><span className="text-emerald-400">&#x1F3AF;</span>Trade Plan</h3>
           <div className="space-y-3">
-            <div className="flex justify-between items-center bg-slate-800/30 rounded-lg px-3 py-2">
-              <span className="text-xs text-slate-500">Signal</span>
-              <span className={`text-xl font-bold ${(s?.score ?? 0) >= 40 ? "text-emerald-400" : (s?.score ?? 0) <= -40 ? "text-red-400" : "text-amber-400"}`}>{s?.signal || "WAIT"}</span>
+            <div className={`rounded-xl p-4 text-center border ${(s?.score ?? 0) >= 40 ? "bg-emerald-950/30 border-emerald-600/40" : (s?.score ?? 0) <= -40 ? "bg-red-950/30 border-red-600/40" : "bg-amber-950/30 border-amber-600/40"}`}>
+              <div className="text-[10px] text-slate-500 uppercase tracking-wider mb-1">Action</div>
+              <div className={`text-2xl font-extrabold ${(s?.score ?? 0) >= 40 ? "text-emerald-400" : (s?.score ?? 0) <= -40 ? "text-red-400" : "text-amber-400"}`}>
+                {(s?.score ?? 0) >= 40 ? "BUY" : (s?.score ?? 0) <= -40 ? "SELL" : "WAIT"}
+              </div>
+              <div className="text-[11px] text-slate-500 mt-1">
+                {(s?.score ?? 0) >= 40
+                  ? (s?.score ?? 0) >= 70 ? "Strong buy signal — high conviction setup" : "Buy signal — favorable entry opportunity"
+                  : (s?.score ?? 0) <= -40
+                  ? (s?.score ?? 0) <= -70 ? "Strong sell signal — avoid or exit" : "Sell signal — consider exiting"
+                  : "No clear signal — wait for better setup"}
+              </div>
+              <div className="flex justify-center gap-4 mt-2 text-[10px] text-slate-500">
+                <span>Score: <strong className={(s?.score ?? 0) >= 40 ? "text-emerald-400" : (s?.score ?? 0) <= -40 ? "text-red-400" : "text-amber-400"}>{s?.score ?? "-"}</strong></span>
+                <span>Confidence: <strong>{s?.confidence ?? "-"}%</strong></span>
+                <span>Timeframe: <strong className="text-white">{r.strategy?.timeframe_label || "N/A"}</strong></span>
+              </div>
             </div>
             <div className="space-y-2">
               <PlanRow label="Entry Zone" value={r.strategy?.entry_zone} color="text-emerald-400" />
@@ -538,23 +579,54 @@ function CryptoView({ API }: { API: string }) {
   );
 }
 
+interface HoldingAdvice {
+  action: string; reason: string; urgency: string; suggested_qty: number | null;
+}
+interface AdvisedHolding extends PortfolioHolding {
+  advice: HoldingAdvice;
+}
+interface PortfolioAdviseResult {
+  holdings: AdvisedHolding[];
+  suggestions: string[];
+  summary: {
+    total_positions: number; total_cost: number; total_value: number;
+    total_pnl: number; total_pnl_percent: number; win_rate: number;
+    winners: number; losers: number; health_score: number;
+    critical_alerts: number; warnings: number;
+  };
+  diversification: { concentration_risk: number; note: string };
+}
+
 function PortfolioView({ API }: { API: string }) {
-  const [analysis, setAnalysis] = useState<PortfolioAnalysis | null>(null);
+  const [advice, setAdvice] = useState<PortfolioAdviseResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [addForm, setAddForm] = useState({ ticker: "", price: "", qty: "1" });
+  const [activePfTab, setActivePfTab] = useState<"overview" | "advice">("overview");
+
   const load = async () => {
     setLoading(true);
-    try { const r = await fetch(`${API}/portfolio/analyze`); setAnalysis(await r.json()); } catch {}
+    try { const r = await fetch(`${API}/portfolio/advise`); setAdvice(await r.json()); } catch {}
     setLoading(false);
   };
+
   const add = async () => {
     if (!addForm.ticker || !addForm.price) return;
     await fetch(`${API}/portfolio/add?ticker=${addForm.ticker}&entry_price=${addForm.price}&quantity=${addForm.qty}`, { method: "POST" });
     setAddForm({ ticker: "", price: "", qty: "1" }); load();
   };
+
   const remove = async (t: string, i: number) => { await fetch(`${API}/portfolio/remove?ticker=${t}&index=${i}`, { method: "DELETE" }); load(); };
+
   useEffect(() => { load(); }, []);
-  const s = analysis?.summary;
+
+  const s = advice?.summary;
+  const adviceCol: Record<string, string> = {
+    hold: "text-blue-400 bg-blue-950/30 border-blue-800/40",
+    take_profit: "text-emerald-400 bg-emerald-950/30 border-emerald-800/40",
+    watch: "text-amber-400 bg-amber-950/30 border-amber-800/40",
+    cut_loss: "text-red-400 bg-red-950/30 border-red-800/40",
+  };
+
   return (
     <div className="space-y-4">
       <div className="bg-slate-900/60 border border-slate-800/50 rounded-xl p-4">
@@ -566,6 +638,7 @@ function PortfolioView({ API }: { API: string }) {
           <button onClick={add} className="bg-gradient-to-r from-emerald-600 to-emerald-500 hover:from-emerald-500 hover:to-emerald-400 text-white px-4 py-2 rounded-lg text-sm font-semibold transition-all duration-200 shadow-lg shadow-emerald-600/20">Add</button>
         </div>
       </div>
+
       <button onClick={load} disabled={loading} className="bg-gradient-to-r from-blue-600 to-blue-500 hover:from-blue-500 hover:to-blue-400 disabled:from-slate-800 disabled:to-slate-800 text-white px-5 py-2.5 rounded-xl text-sm font-semibold transition-all duration-200 shadow-lg shadow-blue-600/20 hover:shadow-blue-500/30 disabled:shadow-none">
         {loading ? (
           <span className="flex items-center gap-2">
@@ -574,39 +647,100 @@ function PortfolioView({ API }: { API: string }) {
           </span>
         ) : "Refresh Portfolio"}
       </button>
+
       {s && (
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 animate-slideUp">
-          <SummaryCard label="Total Value" value={`$${s.total_value?.toLocaleString()}`} color="text-emerald-400" />
-          <SummaryCard label="P&L" value={`${s.total_pnl >= 0 ? "+" : ""}$${s.total_pnl?.toFixed(2)}`} color={s.total_pnl >= 0 ? "text-emerald-400" : "text-red-400"} />
-          <SummaryCard label="Win Rate" value={`${s.win_rate}%`} color={s.win_rate >= 50 ? "text-emerald-400" : "text-red-400"} />
-          <SummaryCard label="Concentration" value={`${s.concentration_risk}%`} color={s.concentration_warning ? "text-red-400" : "text-emerald-400"} />
-        </div>
-      )}
-      {analysis?.holdings && analysis.holdings.length > 0 && (
-        <div className="bg-slate-900/40 border border-slate-800/50 rounded-xl overflow-hidden">
-          <div className="overflow-x-auto">
-            <table className="w-full text-xs">
-              <thead><tr className="border-b border-slate-800/70 text-slate-500 bg-slate-900/60">
-                {["Ticker", "Entry", "Current", "P&L", "P&L%", "Alloc%", ""].map(h => (<th key={h} className="text-left p-3 font-semibold whitespace-nowrap text-[11px] uppercase tracking-wider">{h}</th>))}
-              </tr></thead>
-              <tbody>
-                {analysis.holdings.map((h, i) => (
-                  <tr key={i} className={`border-b border-slate-800/30 hover:bg-slate-800/40 transition-colors duration-150 ${i % 2 === 0 ? "bg-slate-900/20" : ""}`}>
-                    <td className="p-3 font-bold text-white">{h.ticker}</td>
-                    <td className="p-3 text-white font-mono">${h.entry_price.toFixed(2)}</td>
-                    <td className="p-3 text-white font-mono">${h.current_price.toFixed(2)}</td>
-                    <td className={`p-3 font-mono font-medium ${h.pnl >= 0 ? "text-emerald-400" : "text-red-400"}`}>{h.pnl >= 0 ? "+" : ""}${h.pnl.toFixed(2)}</td>
-                    <td className={`p-3 font-mono font-medium ${h.pnl_percent >= 0 ? "text-emerald-400" : "text-red-400"}`}>{h.pnl_percent >= 0 ? "+" : ""}{h.pnl_percent.toFixed(1)}%</td>
-                    <td className="p-3 text-white font-mono">{h.allocation_pct.toFixed(1)}%</td>
-                    <td className="p-3"><button onClick={() => remove(h.ticker, i)} className="text-red-500 hover:text-red-400 text-[10px] font-medium px-2 py-1 rounded hover:bg-red-950/30 transition-all">Remove</button></td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+        <>
+          <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 animate-slideUp">
+            <SummaryCard label="Health Score" value={`${s.health_score}/100`} color={s.health_score >= 60 ? "text-emerald-400" : s.health_score >= 35 ? "text-amber-400" : "text-red-400"} />
+            <SummaryCard label="Total Value" value={`$${s.total_value?.toLocaleString()}`} color="text-emerald-400" />
+            <SummaryCard label="P&L" value={`${s.total_pnl >= 0 ? "+" : ""}$${s.total_pnl?.toFixed(2)}`} color={s.total_pnl >= 0 ? "text-emerald-400" : "text-red-400"} />
+            <SummaryCard label="Win Rate" value={`${s.win_rate}%`} color={s.win_rate >= 50 ? "text-emerald-400" : "text-red-400"} />
+            <SummaryCard label="Alerts" value={`${s.critical_alerts + s.warnings}`} color={s.critical_alerts > 0 ? "text-red-400" : s.warnings > 0 ? "text-amber-400" : "text-emerald-400"} />
           </div>
+
+          <div className="flex gap-1 bg-slate-900/50 border border-slate-800/50 p-1 rounded-xl w-fit">
+            <button onClick={() => setActivePfTab("overview")}
+              className={`px-4 py-1.5 rounded-lg text-xs font-medium transition-all duration-200 ${activePfTab === "overview" ? "bg-gradient-to-r from-blue-600 to-blue-500 text-white shadow" : "text-slate-500 hover:text-slate-300"}`}>Holdings</button>
+            <button onClick={() => setActivePfTab("advice")}
+              className={`px-4 py-1.5 rounded-lg text-xs font-medium transition-all duration-200 ${activePfTab === "advice" ? "bg-gradient-to-r from-blue-600 to-blue-500 text-white shadow" : "text-slate-500 hover:text-slate-300"}`}>Advice</button>
+          </div>
+
+          {activePfTab === "advice" && (
+            <div className="space-y-3 animate-slideUp">
+              {advice?.suggestions?.map((sg, i) => (
+                <div key={i} className="bg-slate-900/60 border border-slate-800/50 rounded-xl p-3 text-sm text-slate-300 flex items-start gap-2">
+                  <span className="text-lg">{sg.includes("critical") || sg.includes("Cutting") ? "&#x26A0;&#xFE0F;" : "&#x1F4A1;"}</span>
+                  <span>{sg}</span>
+                </div>
+              ))}
+              <div className="bg-slate-900/60 border border-slate-800/50 rounded-xl p-3">
+                <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-3">Diversification</h3>
+                <div className="text-sm text-slate-300">{advice?.diversification?.note}</div>
+                <div className="mt-2 text-xs text-slate-500">Top position: {advice?.diversification?.concentration_risk}% of portfolio</div>
+              </div>
+              {advice?.holdings?.map((h, i) => (
+                <div key={i} className="bg-slate-900/60 border border-slate-800/50 rounded-xl p-4">
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="flex items-center gap-2">
+                      <span className="font-bold text-white">{h.ticker}</span>
+                      <span className={`text-xs px-2 py-0.5 rounded-full border font-medium ${adviceCol[h.advice.action] || "text-slate-400"}`}>
+                        {h.advice.action.replace(/_/g, " ")}
+                      </span>
+                      {h.advice.urgency === "high" && <span className="text-[10px] text-red-400 font-semibold">&#x26A0;&#xFE0F;</span>}
+                    </div>
+                    <span className={`text-sm font-mono font-medium ${h.pnl >= 0 ? "text-emerald-400" : "text-red-400"}`}>
+                      {h.pnl >= 0 ? "+" : ""}{h.pnl_percent.toFixed(1)}%
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-400">{h.advice.reason}</p>
+                  <div className="flex gap-4 mt-2 text-[10px] text-slate-500">
+                    <span>Entry: <strong className="text-white">${h.entry_price.toFixed(2)}</strong></span>
+                    <span>Current: <strong className="text-white">${h.current_price.toFixed(2)}</strong></span>
+                    <span>Alloc: <strong className="text-white">{h.allocation_pct}%</strong></span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {activePfTab === "overview" && advice?.holdings && advice.holdings.length > 0 && (
+            <div className="bg-slate-900/40 border border-slate-800/50 rounded-xl overflow-hidden">
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs">
+                  <thead><tr className="border-b border-slate-800/70 text-slate-500 bg-slate-900/60">
+                    {["Ticker", "Entry", "Current", "P&L", "P&L%", "Alloc%", "Advice", ""].map(h => (<th key={h} className="text-left p-3 font-semibold whitespace-nowrap text-[11px] uppercase tracking-wider">{h}</th>))}
+                  </tr></thead>
+                  <tbody>
+                    {advice.holdings.map((h, i) => (
+                      <tr key={i} className={`border-b border-slate-800/30 hover:bg-slate-800/40 transition-colors duration-150 ${i % 2 === 0 ? "bg-slate-900/20" : ""}`}>
+                        <td className="p-3 font-bold text-white">{h.ticker}</td>
+                        <td className="p-3 text-white font-mono">${h.entry_price.toFixed(2)}</td>
+                        <td className="p-3 text-white font-mono">${h.current_price.toFixed(2)}</td>
+                        <td className={`p-3 font-mono font-medium ${h.pnl >= 0 ? "text-emerald-400" : "text-red-400"}`}>{h.pnl >= 0 ? "+" : ""}${h.pnl.toFixed(2)}</td>
+                        <td className={`p-3 font-mono font-medium ${h.pnl_percent >= 0 ? "text-emerald-400" : "text-red-400"}`}>{h.pnl_percent >= 0 ? "+" : ""}{h.pnl_percent.toFixed(1)}%</td>
+                        <td className="p-3 text-white font-mono">{h.allocation_pct.toFixed(1)}%</td>
+                        <td className="p-3">
+                          <span className={`text-[10px] px-2 py-0.5 rounded-full border font-medium capitalize ${adviceCol[h.advice.action] || "text-slate-400"}`}>
+                            {h.advice.action.replace(/_/g, " ")}
+                          </span>
+                        </td>
+                        <td className="p-3"><button onClick={() => remove(h.ticker, i)} className="text-red-500 hover:text-red-400 text-[10px] font-medium px-2 py-1 rounded hover:bg-red-950/30 transition-all">Remove</button></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+        </>
+      )}
+
+      {(!advice?.holdings || advice.holdings.length === 0) && !loading && (
+        <div className="text-center py-16 bg-slate-900/30 border border-slate-800/50 rounded-xl">
+          <div className="text-4xl mb-3 opacity-50">&#x1F4BC;</div>
+          <p className="text-slate-500 text-sm">No positions yet. Add one above or from Ticker Analysis.</p>
         </div>
       )}
-      {(!analysis?.holdings || analysis.holdings.length === 0) && !loading && <div className="text-center py-16 bg-slate-900/30 border border-slate-800/50 rounded-xl"><div className="text-4xl mb-3 opacity-50">&#x1F4BC;</div><p className="text-slate-500 text-sm">No positions yet. Add one above.</p></div>}
     </div>
   );
 }
