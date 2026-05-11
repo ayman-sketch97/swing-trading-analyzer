@@ -1,38 +1,26 @@
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-import yfinance as yf
 import pandas as pd
 import numpy as np
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Optional
-import json
 import os
-import time
+import traceback
 
-data_cache = {}
-CACHE_TTL = 300
-
-
-def get_cached(key: str, fetch_fn, ttl: int = CACHE_TTL):
-    now = time.time()
-    if key in data_cache and (now - data_cache[key]["ts"]) < ttl:
-        return data_cache[key]["data"]
-    result = fetch_fn()
-    data_cache[key] = {"data": result, "ts": now}
-    return result
-
-
-def clean_types(obj):
-    if isinstance(obj, dict):
-        return {k: clean_types(v) for k, v in obj.items()}
-    elif isinstance(obj, (list, tuple)):
-        return [clean_types(v) for v in obj]
-    elif hasattr(obj, "item"):
-        return obj.item()
-    return obj
+from modules.data_fetcher import fetch_data, fetch_data_interval, fetch_multi_timeframe, fetch_info, get_cached
+from modules.universe_filter import liquidity_filter
+from modules.trend_analyzer import calc_ema, analyze_trend, relative_strength_vs_spy
+from modules.momentum_engine import calc_rsi, calc_macd, analyze_momentum
+from modules.volume_engine import detect_volume_spike, analyze_obv, analyze_volume_trend
+from modules.pattern_detector import detect_consolidation, detect_breakout, detect_volatility_squeeze, detect_support_resistance, detect_liquidity_zones, get_market_session
+from modules.scoring_engine import compute_stock_score
+from modules.market_regime import check_market_regime, get_market_context
+from modules.crypto_scanner import scan_crypto, CRYPTO_TICKERS, NARRATIVE_MAP
+from modules.portfolio_manager import load_portfolio, save_portfolio, add_position, remove_position, analyze_portfolio
+from modules.alert_system import load_alerts, save_alerts, add_alert, check_alerts as check_alerts_fn
 
 
-app = FastAPI(title="Trading & Investing Platform")
+app = FastAPI(title="Swing Trading Platform")
 
 app.add_middleware(
     CORSMiddleware,
@@ -46,7 +34,6 @@ WATCHLIST_TICKERS = [
     "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "TSLA", "META", "NFLX",
     "AMD", "CRM", "AVGO", "ORCL", "COST", "JPM", "V", "JNJ",
     "WMT", "PG", "UNH", "HD", "DIS", "ADBE", "PYPL", "INTC",
-    "BTC-USD", "ETH-USD", "SOL-USD", "XRP-USD", "DOGE-USD", "ADA-USD",
     "SPY", "QQQ", "IWM", "VOO", "VTI", "DIA", "XLF", "XLE", "XLK",
     "XLV", "XLI", "XLP", "XLU", "XLY", "XLB", "XLRE",
     "BA", "CAT", "CSCO", "CVX", "DOW", "GS", "HON", "IBM", "KO",
@@ -57,78 +44,30 @@ WATCHLIST_TICKERS = [
     "NVO", "TMO", "DHR", "QCOM", "TXN", "MU", "ASML", "AMAT",
     "LRCX", "KLAC", "PANW", "FTNT", "NOW", "WDAY", "TEAM", "PATH",
     "TOST", "CPNG", "MELI", "SE", "BABA", "JD", "NIO", "XPEV",
-    "F", "GM", "TSM", "ARM", "INTC", "UBER",
+    "F", "GM", "TSM", "ARM",
 ]
 
-PORTFOLIO_FILE = os.path.join(os.path.dirname(__file__), "portfolio.json")
-ALERTS_FILE = os.path.join(os.path.dirname(__file__), "alerts.json")
-
-
-def load_json(path):
-    if os.path.exists(path):
-        with open(path, "r") as f:
-            return json.load(f)
-    return []
-
-
-def save_json(path, data):
-    with open(path, "w") as f:
-        json.dump(data, f, indent=2)
+INDICATOR_TOOLTIPS = {
+    "rsi": "RSI (Relative Strength Index) measures speed/change of price movements. 55-75 = healthy momentum.",
+    "macd": "MACD shows relationship between two moving averages. Positive histogram = bullish momentum.",
+    "ema": "20/50/200 day EMAs show short, medium, and long-term trends. Golden cross = 50 > 200.",
+    "bb": "Bollinger Bands measure volatility. Squeeze = low vol before potential breakout.",
+    "stoch": "Stochastic Oscillator compares close price to price range. Over 80 = overbought.",
+    "atr": "ATR (Average True Range) measures market volatility.",
+    "volume": "Volume > 1.5x average indicates strong institutional interest.",
+    "obv": "On-Balance Volume tracks cumulative volume. Rising OBV confirms uptrend.",
+}
 
 
 def sanitize_ticker(ticker: str) -> str:
-    ticker = ticker.strip().upper().replace(".", "-")
-    return ticker
-
-
-def fetch_data(ticker: str, days: int = 400) -> pd.DataFrame:
-    cache_key = f"fetch_data_{ticker}_{days}"
-    return get_cached(cache_key, lambda: _fetch_data(ticker, days))
-
-
-def _fetch_data(ticker: str, days: int = 400) -> pd.DataFrame:
-    stock = yf.Ticker(ticker)
-    end = datetime.now()
-    start = end - timedelta(days=days)
-    df = stock.history(start=start, end=end)
-    if df.empty:
-        raise HTTPException(status_code=404, detail=f"No data found for ticker: {ticker}")
-    df = df[["Open", "High", "Low", "Close", "Volume"]].copy()
-    df.index = pd.to_datetime(df.index)
-    return df
-
-
-def calc_ema(series: pd.Series, period: int) -> pd.Series:
-    return series.ewm(span=period, adjust=False).mean()
-
-
-def calc_rsi(series: pd.Series, period: int = 14) -> pd.Series:
-    delta = series.diff()
-    gain = delta.where(delta > 0, 0.0)
-    loss = (-delta).where(delta < 0, 0.0)
-    avg_gain = gain.ewm(span=period, adjust=False).mean()
-    avg_loss = loss.ewm(span=period, adjust=False).mean()
-    rs = avg_gain / avg_loss.replace(0, np.nan)
-    return 100 - (100 / (1 + rs))
+    return ticker.strip().upper().replace(".", "-")
 
 
 def calc_atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
-    high, low = df["High"], df["Low"]
-    close = df["Close"].shift(1)
+    high, low = df["high"], df["low"]
+    close = df["close"].shift(1)
     tr = pd.concat([high - low, (high - close).abs(), (low - close).abs()], axis=1).max(axis=1)
     return tr.ewm(span=period, adjust=False).mean()
-
-
-def calc_macd(series: pd.Series) -> dict:
-    ema_fast = series.ewm(span=12, adjust=False).mean()
-    ema_slow = series.ewm(span=26, adjust=False).mean()
-    macd_line = ema_fast - ema_slow
-    signal = macd_line.ewm(span=9, adjust=False).mean()
-    return {
-        "macd": round(macd_line.iloc[-1], 2),
-        "signal": round(signal.iloc[-1], 2),
-        "histogram": round((macd_line.iloc[-1] - signal.iloc[-1]), 2),
-    }
 
 
 def calc_bollinger_bands(series: pd.Series, period: int = 20) -> dict:
@@ -136,86 +75,133 @@ def calc_bollinger_bands(series: pd.Series, period: int = 20) -> dict:
     std = series.rolling(window=period).std()
     upper, lower = sma + (std * 2), sma - (std * 2)
     return {
-        "upper": round(upper.iloc[-1], 2),
-        "middle": round(sma.iloc[-1], 2),
-        "lower": round(lower.iloc[-1], 2),
-        "bandwidth": round(((upper.iloc[-1] - lower.iloc[-1]) / sma.iloc[-1]) * 100, 2),
+        "upper": round(float(upper.iloc[-1]), 2),
+        "middle": round(float(sma.iloc[-1]), 2),
+        "lower": round(float(lower.iloc[-1]), 2),
+        "bandwidth": round(float(((upper.iloc[-1] - lower.iloc[-1]) / sma.iloc[-1]) * 100), 2),
     }
 
 
 def calc_stochastic(df: pd.DataFrame, k_period: int = 14) -> dict:
-    low_min = df["Low"].rolling(window=k_period).min()
-    high_max = df["High"].rolling(window=k_period).max()
-    k = 100 * (df["Close"] - low_min) / (high_max - low_min).replace(0, np.nan)
+    low_min = df["low"].rolling(window=k_period).min()
+    high_max = df["high"].rolling(window=k_period).max()
+    k = 100 * (df["close"] - low_min) / (high_max - low_min).replace(0, np.nan)
     d = k.rolling(window=3).mean()
     return {
-        "k": round(k.iloc[-1], 2) if not np.isnan(k.iloc[-1]) else 50,
-        "d": round(d.iloc[-1], 2) if not np.isnan(d.iloc[-1]) else 50,
+        "k": round(float(k.iloc[-1]), 2) if not np.isnan(k.iloc[-1]) else 50,
+        "d": round(float(d.iloc[-1]), 2) if not np.isnan(d.iloc[-1]) else 50,
     }
 
 
-def detect_support_resistance(df: pd.DataFrame, lookback: int = 20) -> dict:
-    recent = df.tail(120)
-    current_price = recent["Close"].iloc[-1]
-
-    lows = recent["Low"].rolling(window=lookback, center=True).min()
-    highs = recent["High"].rolling(window=lookback, center=True).max()
-
-    swing_lows = recent[recent["Low"] == lows][["Low"]].dropna()
-    swing_highs = recent[recent["High"] == highs][["High"]].dropna()
-
-    support_raw = sorted([r["Low"] for _, r in swing_lows.iterrows() if r["Low"] < current_price * 0.99], reverse=True)
-    resistance_raw = sorted([r["High"] for _, r in swing_highs.iterrows() if r["High"] > current_price * 1.01])
-
-    def dedup(levels, current, min_gap_pct=0.025, max_count=3):
-        result = []
-        for level in levels:
-            if not result or abs(level - result[-1]) / current > min_gap_pct:
-                result.append(round(level, 2))
-            if len(result) >= max_count:
-                break
-        return result
-
-    support = dedup(support_raw, current_price)
-    resistance = dedup(resistance_raw, current_price)
-
-    while len(support) < 3:
-        last = support[-1] if support else current_price * 0.94
-        support.append(round(last * 0.96, 2))
-    support.sort(reverse=True)
-
-    while len(resistance) < 3:
-        last = resistance[-1] if resistance else current_price * 1.06
-        resistance.append(round(last * 1.04, 2))
-    resistance.sort()
-
+def build_chart_data(df: pd.DataFrame, sr: dict) -> dict:
+    candles, volume, ema20d, ema50d, ema200d = [], [], [], [], []
+    for idx, row in df.tail(120).iterrows():
+        ts = idx.strftime("%Y-%m-%d")
+        candles.append({"time": ts, "open": round(float(row["open"]), 2), "high": round(float(row["high"]), 2), "low": round(float(row["low"]), 2), "close": round(float(row["close"]), 2)})
+        volume.append({"time": ts, "value": int(row["volume"]), "color": "rgba(38,166,154,0.5)" if row["close"] >= row["open"] else "rgba(239,83,80,0.5)"})
+        ema20d.append({"time": ts, "value": round(float(row["ema20"]), 2)})
+        ema50d.append({"time": ts, "value": round(float(row["ema50"]), 2)})
+        ema200d.append({"time": ts, "value": round(float(row["ema200"]), 2)})
     return {
-        "support": support,
-        "resistance": resistance,
-        "support_zones": [{"high": round(s * 1.005, 2), "low": round(s * 0.995, 2), "mid": s} for s in support],
-        "resistance_zones": [{"high": round(r * 1.005, 2), "low": round(r * 0.995, 2), "mid": r} for r in resistance],
+        "candles": candles,
+        "volume": volume,
+        "ema20": ema20d,
+        "ema50": ema50d,
+        "ema200": ema200d,
+        "support_lines": [{"level": s, "label": f"S{i+1}"} for i, s in enumerate(sr["support"])],
+        "resistance_lines": [{"level": r, "label": f"R{i+1}"} for i, r in enumerate(sr["resistance"])],
     }
 
 
-def determine_trend(price, ema20, ema50, ema200) -> str:
-    if price > ema50 and ema20 > ema50:
-        return "bullish"
-    if price < ema50 and ema20 < ema50:
-        return "bearish"
-    if abs(price - ema50) / ema50 < 0.03:
-        return "sideways"
-    return "bullish" if price > ema50 else "bearish"
+@app.get("/analyze")
+def analyze(ticker: str = Query(...)):
+    try:
+        ticker = sanitize_ticker(ticker)
+        if not ticker:
+            raise HTTPException(status_code=400, detail="Ticker is required")
 
+        df = fetch_data(ticker)
+        df["ema20"] = calc_ema(df["close"], 20)
+        df["ema50"] = calc_ema(df["close"], 50)
+        df["ema200"] = calc_ema(df["close"], 200)
+        df["rsi"] = calc_rsi(df["close"], 14)
+        df["atr"] = calc_atr(df, 14)
 
-INDICATOR_TOOLTIPS = {
-    "rsi": "RSI (Relative Strength Index) measures speed/change of price movements. Over 70 = overbought, under 30 = oversold.",
-    "macd": "MACD shows relationship between two moving averages. Positive histogram = bullish momentum, negative = bearish.",
-    "ema": "Exponential Moving Averages smooth price data. 20/50/200 day EMAs show short, medium, and long-term trends.",
-    "bb": "Bollinger Bands measure volatility. Price touching upper band = overextended, lower band = potential bounce.",
-    "stoch": "Stochastic Oscillator compares close price to price range. Over 80 = overbought, under 20 = oversold.",
-    "atr": "ATR (Average True Range) measures market volatility. Higher values = more volatile.",
-    "volume": "Volume spikes indicate strong institutional interest. Can confirm breakouts or reversals.",
-}
+        latest = df.iloc[-1]
+        price = round(float(latest["close"]), 2)
+        ema20, ema50, ema200 = round(float(latest["ema20"]), 2), round(float(latest["ema50"]), 2), round(float(latest["ema200"]), 2)
+        rsi_val, atr_val = round(float(latest["rsi"]), 2), round(float(latest["atr"]), 2)
+        atr_pct = atr_val / price if price > 0 else 0
+
+        trend = analyze_trend(df)
+        sr = detect_support_resistance(df)
+        macd = calc_macd(df["close"])
+        bb = calc_bollinger_bands(df["close"])
+        stoch = calc_stochastic(df)
+        info = fetch_info(ticker)
+        vol_spike = detect_volume_spike(df)
+        obv = analyze_obv(df)
+        regime = check_market_regime()
+
+        sentiment = compute_sentiment(trend, rsi_val, macd, price, ema20, ema50, ema200, stoch, bb, atr_pct, info)
+        strategy = compute_strategy(trend["state"], sentiment, price, sr, atr_val, info)
+
+        volatility_30d = float(df["close"].pct_change().tail(30).std())
+        risk = compute_risk(atr_pct, trend["state"], volatility_30d)
+
+        growth_score = 50
+        returns_3m = float((price / df["close"].iloc[-63] - 1) * 100) if len(df) > 63 else 0.0
+        if returns_3m > 10: growth_score += 15
+        elif returns_3m < -10: growth_score -= 15
+        if info.get("revenueGrowth", 0) > 0.15: growth_score += 15
+        if info.get("earningsGrowth", 0) > 0.2: growth_score += 15
+        growth_score = max(0, min(100, growth_score))
+        growth_label = "High Growth" if growth_score >= 70 else "Moderate Growth" if growth_score >= 50 else "Low Growth" if growth_score >= 30 else "Declining"
+
+        returns = {
+            "1_month": round(float((price / df["close"].iloc[-21] - 1) * 100), 2) if len(df) > 21 else 0.0,
+            "3_months": round(float(returns_3m), 2),
+            "6_months": round(float((price / df["close"].iloc[-126] - 1) * 100), 2) if len(df) > 126 else 0.0,
+            "1_year": round(float((price / df["close"].iloc[-252] - 1) * 100), 2) if len(df) > 252 else 0.0,
+        }
+
+        fundamentals = build_fundamentals(info)
+
+        return {
+            "ticker": ticker,
+            "company_name": info.get("shortName", ticker),
+            "current_price": price,
+            "timestamp": datetime.now().isoformat(),
+            "trend": trend["state"],
+            "sentiment": sentiment,
+            "scoring": sentiment.get("components", {}),
+            "growth_potential": {"score": growth_score, "label": growth_label, "returns": returns},
+            "fundamentals": fundamentals,
+            "risk": risk,
+            "strategy": strategy,
+            "support": sr["support"],
+            "resistance": sr["resistance"],
+            "volume_spike": vol_spike["spike"],
+            "institutional": obv,
+            "market_regime": regime,
+            "indicators": {
+                "ema20": ema20, "ema50": ema50, "ema200": ema200,
+                "rsi": rsi_val, "atr": atr_val, "atr_percent": round(atr_pct * 100, 2),
+                "macd": {k: round(v, 2) if isinstance(v, float) else v for k, v in macd.items()},
+                "bollinger_bands": bb, "stochastic": stoch,
+                "volume_trend": "increasing" if df["volume"].tail(5).mean() > df["volume"].tail(20).mean() else "decreasing",
+                "obv_rising": obv["rising"],
+            },
+            "chart_data": build_chart_data(df, sr),
+            "tooltips": INDICATOR_TOOLTIPS,
+            "disclaimer": "This analysis is for informational purposes only. It is not financial advice.",
+        }
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Analysis failed for {ticker}: {str(e)}")
 
 
 def compute_sentiment(trend, rsi, macd, price, ema20, ema50, ema200, stoch, bb, atr_pct, fundamentals) -> dict:
@@ -232,7 +218,6 @@ def compute_sentiment(trend, rsi, macd, price, ema20, ema50, ema200, stoch, bb, 
     stoch_overbought = stoch["k"] > 80
     bb_lower_band = price < bb["lower"]
     bb_upper_band = price > bb["upper"]
-    volume_confirms = atr_pct > 0.015
 
     if ema_aligned:
         score += 20
@@ -284,7 +269,7 @@ def compute_sentiment(trend, rsi, macd, price, ema20, ema50, ema200, stoch, bb, 
         score -= 8
         tech_reasons.append(f"Price near upper Bollinger Band (${bb['upper']}) — extended")
 
-    if volume_confirms:
+    if atr_pct > 0.015:
         tech_reasons.append(f"ATR {atr_pct*100:.1f}% — {'high' if atr_pct > 0.03 else 'moderate'} volatility")
 
     if fundamentals.get("revenue_growth") and fundamentals["revenue_growth"] > 0.15:
@@ -344,7 +329,7 @@ def compute_sentiment(trend, rsi, macd, price, ema20, ema50, ema200, stoch, bb, 
     }
 
 
-def compute_strategy(trend, sentiment, price, sr, atr, fundamentals, df) -> dict:
+def compute_strategy(trend, sentiment, price, sr, atr, fundamentals) -> dict:
     atr_pct = atr / price if price > 0 else 0.02
     score = sentiment["score"]
 
@@ -364,18 +349,18 @@ def compute_strategy(trend, sentiment, price, sr, atr, fundamentals, df) -> dict
     if atr_pct > 0.03:
         timeframe = "short"
         timeframe_label = "Short-term (2-7 trading days)"
-        desc = "High volatility favors shorter holding periods to capture quick moves"
+        desc = "High volatility favors shorter holding periods"
     elif score >= 50 and fundamentals.get("revenue_growth", 0) > 0.1:
         timeframe = "long"
         timeframe_label = "Long-term (1-3+ months)"
-        desc = "Strong fundamentals and bullish trend support a longer holding period"
+        desc = "Strong fundamentals support longer holding period"
     else:
         timeframe = "medium"
         timeframe_label = "Medium-term (1-4 weeks)"
-        desc = "Moderate setup suitable for swing trading timeframe"
+        desc = "Moderate setup suitable for swing trading"
 
     rationale = []
-    if trend == "bullish":
+    if trend == "bullish" or trend == "strong_uptrend":
         rationale.append("Clear upward trend established")
     elif trend == "bearish":
         rationale.append("Downtrend in place - caution advised")
@@ -386,8 +371,6 @@ def compute_strategy(trend, sentiment, price, sr, atr, fundamentals, df) -> dict
         rationale.append("Multiple technical and fundamental indicators align positively")
     elif sentiment["score"] <= -40:
         rationale.append("Technical and fundamental indicators suggest weakness")
-    else:
-        rationale.append("Mixed signals - limited conviction in either direction")
 
     return {
         "entry_zone": entry_zone,
@@ -403,115 +386,35 @@ def compute_strategy(trend, sentiment, price, sr, atr, fundamentals, df) -> dict
 def compute_risk(atr_pct, trend, volatility_30d) -> dict:
     vol_score = atr_pct * 100
     if vol_score > 4:
-        level = "high"
-        color = "#ef4444"
+        level, color = "high", "#ef4444"
     elif vol_score > 2.5:
-        level = "medium"
-        color = "#f59e0b"
+        level, color = "medium", "#f59e0b"
     else:
-        level = "low"
-        color = "#10b981"
-
+        level, color = "low", "#10b981"
     return {
         "level": level,
         "color": color,
         "volatility_percent": round(vol_score, 2),
-        "annualized_volatility": round(volatility_30d * np.sqrt(252) * 100, 2),
+        "annualized_volatility": round(float(volatility_30d * np.sqrt(252) * 100), 2),
     }
 
 
-def compute_market_context() -> dict:
-    indices = {"SPY": "S&P 500", "QQQ": "NASDAQ", "IWM": "Russell 2000"}
-    result = {"indices": {}, "overall": "neutral"}
-
-    scores = []
-    for ticker, name in indices.items():
-        try:
-            df = fetch_data(ticker, days=250)
-            df["ema50"] = calc_ema(df["Close"], 50)
-            df["ema200"] = calc_ema(df["Close"], 200)
-            price = df["Close"].iloc[-1]
-            ema50 = df["ema50"].iloc[-1]
-            ema200 = df["ema200"].iloc[-1]
-            change_1m = (price / df["Close"].iloc[-21] - 1) * 100
-
-            trend = "bullish" if price > ema50 and price > ema200 else "bearish" if price < ema200 else "mixed"
-            result["indices"][ticker] = {
-                "name": name,
-                "price": round(price, 2),
-                "trend": trend,
-                "change_1m": round(change_1m, 2),
-            }
-            scores.append(1 if trend == "bullish" else -1 if trend == "bearish" else 0)
-        except Exception:
-            result["indices"][ticker] = {"name": name, "price": None, "trend": "unknown", "change_1m": None}
-
-    avg = sum(scores) / len(scores) if scores else 0
-    result["overall"] = "bullish" if avg > 0.3 else "bearish" if avg < -0.3 else "neutral"
-    return result
-
-
-def build_chart_data(df: pd.DataFrame, sr: dict) -> dict:
-    candles, volume, ema20d, ema50d, ema200d = [], [], [], [], []
-    for idx, row in df.tail(120).iterrows():
-        ts = idx.strftime("%Y-%m-%d")
-        candles.append({"time": ts, "open": round(row["Open"], 2), "high": round(row["High"], 2), "low": round(row["Low"], 2), "close": round(row["Close"], 2)})
-        volume.append({"time": ts, "value": int(row["Volume"]), "color": "rgba(38,166,154,0.5)" if row["Close"] >= row["Open"] else "rgba(239,83,80,0.5)"})
-        ema20d.append({"time": ts, "value": round(row["ema20"], 2)})
-        ema50d.append({"time": ts, "value": round(row["ema50"], 2)})
-        ema200d.append({"time": ts, "value": round(row["ema200"], 2)})
-
-    return {
-        "candles": candles,
-        "volume": volume,
-        "ema20": ema20d,
-        "ema50": ema50d,
-        "ema200": ema200d,
-        "support_lines": [{"level": s, "label": f"S{i+1}"} for i, s in enumerate(sr["support"])],
-        "resistance_lines": [{"level": r, "label": f"R{i+1}"} for i, r in enumerate(sr["resistance"])],
-    }
-
-
-def analyze_fundamentals(ticker: str) -> dict:
-    return get_cached(f"fundamentals_{ticker}", lambda: _analyze_fundamentals(ticker), ttl=600)
-
-
-def _analyze_fundamentals(ticker: str) -> dict:
-    try:
-        info = yf.Ticker(ticker).info
-    except Exception:
-        return {}
-
+def build_fundamentals(info: dict) -> dict:
     result = {}
-    result["sector"] = info.get("sector", "N/A")
-    result["industry"] = info.get("industry", "N/A")
-    result["short_name"] = info.get("shortName", ticker)
-    result["market_cap"] = info.get("marketCap", 0)
-    result["pe_ratio"] = info.get("trailingPE")
-    result["forward_pe"] = info.get("forwardPE")
-    result["peg_ratio"] = info.get("pegRatio")
-    result["price_to_book"] = info.get("priceToBook")
-    result["debt_to_equity"] = info.get("debtToEquity")
-    result["revenue_growth"] = info.get("revenueGrowth")
-    result["earnings_growth"] = info.get("earningsGrowth")
-    result["profit_margin"] = info.get("profitMargins")
-    result["operating_margin"] = info.get("operatingMargins")
-    result["return_on_equity"] = info.get("returnOnEquity")
-    result["current_ratio"] = info.get("currentRatio")
-    result["dividend_yield"] = info.get("dividendYield")
-    result["beta"] = info.get("beta")
-    result["target_price"] = info.get("targetMeanPrice")
-    result["recommendation"] = info.get("recommendationKey", "N/A")
-    result["52_week_high"] = info.get("fiftyTwoWeekHigh")
-    result["52_week_low"] = info.get("fiftyTwoWeekLow")
-
-    rev = result.get("revenue_growth")
-    earn = result.get("earnings_growth")
-    pe = result.get("pe_ratio")
-    de = result.get("debt_to_equity")
-    pm = result.get("profit_margin")
+    for k in ["sector", "industry", "shortName", "marketCap", "trailingPE", "forwardPE",
+              "pegRatio", "priceToBook", "debtToEquity", "revenueGrowth", "earningsGrowth",
+              "profitMargins", "operatingMargins", "returnOnEquity", "currentRatio",
+              "dividendYield", "beta", "targetMeanPrice", "recommendationKey",
+              "fiftyTwoWeekHigh", "fiftyTwoWeekLow"]:
+        result[k] = info.get(k)
 
     f_score = 50
+    rev = result.get("revenueGrowth")
+    earn = result.get("earningsGrowth")
+    pe = result.get("trailingPE")
+    de = result.get("debtToEquity")
+    pm = result.get("profitMargins")
+
     if rev and rev > 0.15: f_score += 15
     elif rev and rev > 0: f_score += 5
     if earn and earn > 0.2: f_score += 15
@@ -524,97 +427,11 @@ def _analyze_fundamentals(ticker: str) -> dict:
     elif pm and pm < 0: f_score -= 10
 
     f_score = max(0, min(100, f_score))
-
-    if f_score >= 75: label = "Excellent"
-    elif f_score >= 60: label = "Good"
-    elif f_score >= 40: label = "Average"
-    elif f_score >= 20: label = "Below Average"
-    else: label = "Weak"
+    label = "Excellent" if f_score >= 75 else "Good" if f_score >= 60 else "Average" if f_score >= 40 else "Below Average" if f_score >= 20 else "Weak"
 
     result["score"] = f_score
     result["label"] = label
-
     return result
-
-
-def detect_volume_spike(df: pd.DataFrame) -> bool:
-    avg_vol_20 = df["Volume"].tail(20).mean()
-    current_vol = df["Volume"].iloc[-1]
-    return bool(current_vol > avg_vol_20 * 1.5) if avg_vol_20 > 0 else False
-
-
-@app.get("/analyze")
-def analyze(ticker: str = Query(...)):
-    ticker = sanitize_ticker(ticker)
-    if not ticker:
-        raise HTTPException(status_code=400, detail="Ticker is required")
-
-    df = fetch_data(ticker)
-    df["ema20"] = calc_ema(df["Close"], 20)
-    df["ema50"] = calc_ema(df["Close"], 50)
-    df["ema200"] = calc_ema(df["Close"], 200)
-    df["rsi"] = calc_rsi(df["Close"], 14)
-    df["atr"] = calc_atr(df, 14)
-
-    latest = df.iloc[-1]
-    price = round(latest["Close"], 2)
-    ema20, ema50, ema200 = round(latest["ema20"], 2), round(latest["ema50"], 2), round(latest["ema200"], 2)
-    rsi, atr = round(latest["rsi"], 2), round(latest["atr"], 2)
-    atr_pct = atr / price if price > 0 else 0
-
-    trend = determine_trend(price, ema20, ema50, ema200)
-    sr = detect_support_resistance(df)
-    macd = calc_macd(df["Close"])
-    bb = calc_bollinger_bands(df["Close"])
-    stoch = calc_stochastic(df)
-    fundamentals = analyze_fundamentals(ticker)
-    volume_spike = detect_volume_spike(df)
-
-    volatility_30d = float(df["Close"].pct_change().tail(30).std())
-    risk = compute_risk(atr_pct, trend, volatility_30d)
-    sentiment = compute_sentiment(trend, rsi, macd, price, ema20, ema50, ema200, stoch, bb, atr_pct, fundamentals)
-    strategy = compute_strategy(trend, sentiment, price, sr, atr, fundamentals, df)
-
-    growth_score = 50
-    returns_3m = float((price / df["Close"].iloc[-63] - 1) * 100) if len(df) > 63 else 0.0
-    if returns_3m > 10: growth_score += 15
-    elif returns_3m < -10: growth_score -= 15
-    if fundamentals.get("revenue_growth", 0) > 0.15: growth_score += 15
-    if fundamentals.get("earnings_growth", 0) > 0.2: growth_score += 15
-    growth_score = max(0, min(100, growth_score))
-    growth_label = "High Growth" if growth_score >= 70 else "Moderate Growth" if growth_score >= 50 else "Low Growth" if growth_score >= 30 else "Declining"
-
-    returns = {
-        "1_month": round(float((price / df["Close"].iloc[-21] - 1) * 100), 2) if len(df) > 21 else 0.0,
-        "3_months": round(float(returns_3m), 2),
-        "6_months": round(float((price / df["Close"].iloc[-126] - 1) * 100), 2) if len(df) > 126 else 0.0,
-        "1_year": round(float((price / df["Close"].iloc[-252] - 1) * 100), 2) if len(df) > 252 else 0.0,
-    }
-
-    return {
-        "ticker": ticker,
-        "company_name": fundamentals.get("short_name", ticker),
-        "current_price": price,
-        "timestamp": datetime.now().isoformat(),
-        "trend": trend,
-        "sentiment": sentiment,
-        "growth_potential": {"score": growth_score, "label": growth_label, "returns": returns},
-        "fundamentals": fundamentals,
-        "risk": risk,
-        "strategy": strategy,
-        "support": sr["support"],
-        "resistance": sr["resistance"],
-        "volume_spike": volume_spike,
-        "indicators": {
-            "ema20": ema20, "ema50": ema50, "ema200": ema200,
-            "rsi": rsi, "atr": atr, "atr_percent": round(atr_pct * 100, 2),
-            "macd": macd, "bollinger_bands": bb, "stochastic": stoch,
-            "volume_trend": "increasing" if df["Volume"].tail(5).mean() > df["Volume"].tail(20).mean() else "decreasing",
-        },
-        "chart_data": build_chart_data(df, sr),
-        "tooltips": INDICATOR_TOOLTIPS,
-        "disclaimer": "This analysis is for informational purposes only. It is not financial advice. All outputs are based on historical data and technical patterns. Past performance does not guarantee future results. Always do your own research and consult a licensed financial advisor.",
-    }
 
 
 @app.get("/analyze/simple")
@@ -625,8 +442,8 @@ def analyze_simple(ticker: str = Query(...)):
         latest = df.iloc[-1]
         return {
             "ticker": ticker,
-            "price": round(latest["Close"], 2),
-            "change": round(float((latest["Close"] / df.iloc[-2]["Close"] - 1) * 100), 2),
+            "price": round(float(latest["close"]), 2),
+            "change": round(float((latest["close"] / df.iloc[-2]["close"] - 1) * 100), 2),
         }
     except HTTPException:
         raise
@@ -634,59 +451,252 @@ def analyze_simple(ticker: str = Query(...)):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/analyze/chart")
+def analyze_chart(ticker: str = Query(...), timeframe: str = Query("1 day")):
+    ticker = sanitize_ticker(ticker)
+    if not ticker:
+        raise HTTPException(status_code=400, detail="Ticker is required")
+
+    try:
+        mtf = fetch_multi_timeframe(ticker)
+    except Exception as e:
+        raise HTTPException(status_code=404, detail=f"Chart data unavailable: {str(e)}")
+
+    tf_map = {"15 min": "15m", "1 hour": "1h", "1 day": "1d"}
+    selected = mtf.get(timeframe)
+    if selected is None:
+        selected = mtf.get("1 day", next(iter(mtf.values())) if mtf else None)
+    if selected is None or selected.empty:
+        raise HTTPException(status_code=404, detail="CHART DATA NOT AVAILABLE")
+
+    df = selected
+    df["ema20"] = calc_ema(df["close"], 20)
+    df["ema50"] = calc_ema(df["close"], 50)
+    df["ema200"] = calc_ema(df["close"], 200)
+    df["rsi"] = calc_rsi(df["close"], 14)
+
+    price = float(df["close"].iloc[-1])
+    ema20 = float(df["ema20"].iloc[-1])
+    ema50 = float(df["ema50"].iloc[-1])
+    ema200 = float(df["ema200"].iloc[-1])
+    rsi_val = float(df["rsi"].iloc[-1]) if not pd.isna(df["rsi"].iloc[-1]) else None
+    macd = calc_macd(df["close"])
+
+    trend = analyze_trend(df)
+    sr = detect_support_resistance(df)
+    vol = detect_volume_spike(df)
+    squeeze = detect_volatility_squeeze(df)
+    liq = detect_liquidity_zones(df)
+    session = get_market_session()
+    regime = check_market_regime()
+
+    ema_aligned = price > ema20 > ema50 > ema200
+    ema_bearish = price < ema50 and ema20 < ema50
+    macd_bullish = macd["histogram"] > 0
+
+    if ema_aligned and macd_bullish:
+        structure = "bullish"
+    elif ema_bearish and not macd_bullish:
+        structure = "bearish"
+    elif squeeze["squeeze"]:
+        structure = "squeeze"
+    else:
+        structure = "ranging"
+
+    is_intraday = timeframe in ("15 min", "1 hour")
+    to_time = (lambda t: int(t.timestamp())) if is_intraday else (lambda t: t.strftime("%Y-%m-%d"))
+
+    candles_out = []
+    for idx, row in df.iterrows():
+        candles_out.append({
+            "time": to_time(idx),
+            "open": round(float(row["open"]), 2),
+            "high": round(float(row["high"]), 2),
+            "low": round(float(row["low"]), 2),
+            "close": round(float(row["close"]), 2),
+        })
+
+    volume_out = []
+    for idx, row in df.iterrows():
+        volume_out.append({
+            "time": to_time(idx),
+            "value": int(row["volume"]),
+            "color": "rgba(38,166,154,0.5)" if row["close"] >= row["open"] else "rgba(239,83,80,0.5)",
+        })
+
+    rsi_out = []
+    for idx, row in df.iterrows():
+        rsi_val_row = round(float(row["rsi"]), 1) if not pd.isna(row["rsi"]) else None
+        rsi_out.append({
+            "time": to_time(idx),
+            "value": rsi_val_row,
+        })
+
+    ema20_out = filter_vals([{"time": to_time(idx), "value": round(float(row["ema20"]), 2)} for idx, row in df.iterrows()])
+    ema50_out = filter_vals([{"time": to_time(idx), "value": round(float(row["ema50"]), 2)} for idx, row in df.iterrows()])
+    ema200_out = filter_vals([{"time": to_time(idx), "value": round(float(row["ema200"]), 2)} for idx, row in df.iterrows()])
+
+    all_tfs = {}
+    for tf_label, tf_df in mtf.items():
+        if tf_df is not None and not tf_df.empty:
+            tdf = tf_df.copy()
+            tdf["ema20"] = calc_ema(tdf["close"], 20)
+            tdf["ema50"] = calc_ema(tdf["close"], 50)
+            tdf["ema200"] = calc_ema(tdf["close"], 200)
+            t_price = float(tdf["close"].iloc[-1])
+            t_trend = analyze_trend(tdf)
+            t_rsi_series = calc_rsi(tdf["close"], 14)
+            t_rsi_val = float(t_rsi_series.iloc[-1]) if not pd.isna(t_rsi_series.iloc[-1]) else None
+            all_tfs[tf_label] = {
+                "price": round(t_price, 2),
+                "trend": t_trend["state"],
+                "rsi": round(t_rsi_val, 1),
+                "ema20": round(float(tdf["ema20"].iloc[-1]), 2),
+                "ema50": round(float(tdf["ema50"].iloc[-1]), 2),
+                "ema200": round(float(tdf["ema200"].iloc[-1]), 2),
+            }
+
+    tf_alignment = "aligned"
+    trends_set = set(v["trend"] for v in all_tfs.values())
+    if len(trends_set) > 1:
+        tf_alignment = "conflict"
+    if "bearish" in trends_set and "strong_uptrend" in trends_set:
+        tf_alignment = "strong_conflict"
+
+    return {
+        "ticker": ticker,
+        "timeframe": timeframe,
+        "current_price": round(price, 2),
+        "market_structure": structure,
+        "trend": trend["state"],
+        "ema_alignment": "bullish" if ema_aligned else "bearish" if ema_bearish else "mixed",
+        "rsi": round(rsi_val, 1) if rsi_val is not None else None,
+        "rsi_zone": "overbought" if rsi_val and rsi_val > 75 else "oversold" if rsi_val and rsi_val < 30 else "healthy" if rsi_val and 55 <= rsi_val <= 75 else "neutral",
+        "macd": {k: round(v, 2) if isinstance(v, float) else v for k, v in macd.items()},
+        "volume": {
+            "spike": vol["spike"],
+            "vol_ratio": vol["vol_ratio"],
+            "avg_20": vol["avg_volume_20"],
+            "current": vol["current_volume"],
+        },
+        "support_resistance": {
+            "support": sr["support"],
+            "resistance": sr["resistance"],
+            "support_zones": sr["support_zones"],
+            "resistance_zones": sr["resistance_zones"],
+        },
+        "liquidity_zones": liq,
+        "squeeze": squeeze,
+        "session": session,
+        "market_regime": regime,
+        "multi_timeframe": all_tfs,
+        "timeframe_alignment": tf_alignment,
+        "chart": {
+            "candles": candles_out,
+            "volume": volume_out,
+            "rsi": rsi_out,
+            "ema20": ema20_out,
+            "ema50": ema50_out,
+            "ema200": ema200_out,
+            "support_lines": [{"level": s, "label": f"S{i+1}"} for i, s in enumerate(sr["support"])],
+            "resistance_lines": [{"level": r, "label": f"R{i+1}"} for i, r in enumerate(sr["resistance"])],
+        },
+        "no_trade_zone": structure == "ranging" or (rsi_val is not None and rsi_val > 78 and not vol["spike"]),
+    }
+
+
+def filter_vals(vals: list) -> list:
+    return [v for v in vals if v["value"] > 0]
+
+
 @app.get("/screener")
 def screener(
-    preset: str = Query("all", description="Preset: all, strong_buy, growth, momentum, value"),
-    ticker: Optional[str] = Query(None, description="Specific ticker to analyze"),
+    preset: str = Query("all"),
+    ticker: Optional[str] = Query(None),
+    min_score: float = Query(0),
 ):
     stocks = []
     tickers_to_scan = [sanitize_ticker(ticker)] if ticker else WATCHLIST_TICKERS
+
     for t in tickers_to_scan:
         try:
             df = fetch_data(t, days=250)
-            if len(df) < 50:
+            if df.empty or len(df) < 50:
                 continue
-            df["ema20"] = calc_ema(df["Close"], 20)
-            df["ema50"] = calc_ema(df["Close"], 50)
-            df["ema200"] = calc_ema(df["Close"], 200)
-            df["rsi"] = calc_rsi(df["Close"], 14)
+            df["ema20"] = calc_ema(df["close"], 20)
+            df["ema50"] = calc_ema(df["close"], 50)
+            df["ema200"] = calc_ema(df["close"], 200)
+            df["rsi"] = calc_rsi(df["close"], 14)
             df["atr"] = calc_atr(df, 14)
 
             latest = df.iloc[-1]
-            price = round(latest["Close"], 2)
-            atr_pct = round(latest["atr"] / price, 4) if price > 0 else 0
-            trend = determine_trend(price, round(latest["ema20"], 2), round(latest["ema50"], 2), round(latest["ema200"], 2))
-            macd = calc_macd(df["Close"])
-            bb = calc_bollinger_bands(df["Close"])
+            price = round(float(latest["close"]), 2)
+            atr_pct = float(latest["atr"] / price) if price > 0 else 0
+            trend = analyze_trend(df)
+            macd = calc_macd(df["close"])
+            bb = calc_bollinger_bands(df["close"])
             stoch = calc_stochastic(df)
-            fundamentals = analyze_fundamentals(t)
-            sentiment = compute_sentiment(trend, round(latest["rsi"], 2), macd, price, round(latest["ema20"], 2), round(latest["ema50"], 2), round(latest["ema200"], 2), stoch, bb, atr_pct, fundamentals)
+            info = fetch_info(t)
+            sentiment = compute_sentiment(trend, round(float(latest["rsi"]), 2), macd, price,
+                                          round(float(latest["ema20"]), 2), round(float(latest["ema50"]), 2),
+                                          round(float(latest["ema200"]), 2), stoch, bb, atr_pct, info)
 
-            returns_3m = round(float((price / df["Close"].iloc[-63] - 1) * 100), 2) if len(df) > 63 else 0.0
-            vol_spike = detect_volume_spike(df)
+            volume_spike = detect_volume_spike(df)
+            consolidation = detect_consolidation(df)
+            breakout = detect_breakout(df)
+            obv = analyze_obv(df)
+
+            spy_df = get_cached("spy_for_rs", lambda: fetch_data("SPY", days=250), ttl=300)
+            rs = relative_strength_vs_spy(t, df, spy_df)
+
+            scoring = compute_stock_score(
+                trend_score=trend["score"],
+                volume_score=volume_spike["score"] + (5 if consolidation["consolidating"] else 0),
+                pattern_score=breakout["score"] + consolidation["score"],
+                momentum_score=round(float(latest["rsi"]), 0),
+                rs_score=rs["score"],
+                obv_score=obv["score"],
+            )
+
+            returns_3m = round(float((price / df["close"].iloc[-63] - 1) * 100), 2) if len(df) > 63 else 0.0
+            fundamentals = build_fundamentals(info)
 
             stock = {
-                "ticker": t, "price": price, "trend": trend,
-                "signal": sentiment["signal"], "score": sentiment["score"],
+                "ticker": t,
+                "price": price,
+                "trend": trend["state"],
+                "signal": sentiment["signal"],
+                "score": scoring["total_score"],
+                "grade": scoring["grade"],
+                "label": scoring["label"],
                 "confidence": sentiment["confidence"],
-                "rsi": round(latest["rsi"], 1),
-                "pe_ratio": fundamentals.get("pe_ratio"),
-                "revenue_growth": round(fundamentals.get("revenue_growth", 0) * 100, 1) if fundamentals.get("revenue_growth") else None,
-                "earnings_growth": round(fundamentals.get("earnings_growth", 0) * 100, 1) if fundamentals.get("earnings_growth") else None,
+                "rsi": round(float(latest["rsi"]), 1),
+                "pe_ratio": info.get("trailingPE"),
+                "revenue_growth": round(info.get("revenueGrowth", 0) * 100, 1) if info.get("revenueGrowth") else None,
                 "returns_3m": returns_3m,
-                "volume_spike": vol_spike,
-                "sector": fundamentals.get("sector", "N/A"),
+                "volume_spike": volume_spike["spike"],
+                "consolidating": consolidation["consolidating"],
+                "breakout": breakout["breakout"],
+                "sector": info.get("sector", "N/A"),
                 "fundamental_score": fundamentals.get("score", 50),
                 "risk": "high" if atr_pct > 0.04 else "medium" if atr_pct > 0.025 else "low",
+                "rs_ratio": rs["rs_ratio"],
+                "entry_zone": f"${round(price * 0.98, 2)} - ${round(price * 1.01, 2)}",
+                "stop_loss": f"${round(price * 0.95, 2)}",
+                "support_1": f"${round(price * 0.96, 2)}",
+                "resistance_1": f"${round(price * 1.04, 2)}",
             }
 
-            if preset == "strong_buy" and sentiment["score"] < 40:
+            if preset == "strong_buy" and scoring["total_score"] < 40:
                 continue
-            if preset == "growth" and fundamentals.get("revenue_growth", 0) < 0.1:
+            if preset == "growth" and info.get("revenueGrowth", 0) < 0.1:
                 continue
-            if preset == "momentum" and not (trend == "bullish" and vol_spike):
+            if preset == "momentum" and not (trend["state"] in ["strong_uptrend", "uptrend"] and volume_spike["spike"]):
                 continue
-            if preset == "value" and (not fundamentals.get("pe_ratio") or fundamentals["pe_ratio"] > 25):
+            if preset == "value" and (not info.get("trailingPE") or info["trailingPE"] > 25):
+                continue
+
+            if scoring["total_score"] < min_score:
                 continue
 
             stocks.append(stock)
@@ -697,98 +707,107 @@ def screener(
     return {"count": len(stocks), "preset": preset, "stocks": stocks}
 
 
+@app.get("/screener/scan")
+def scan_stocks(
+    min_score: float = Query(70, description="Minimum score threshold"),
+    max_results: int = Query(50),
+):
+    stocks = screener(preset="all", min_score=min_score)
+    return {
+        "count": len(stocks["stocks"]),
+        "threshold": min_score,
+        "results": stocks["stocks"][:max_results],
+    }
+
+
+@app.get("/crypto/scan")
+def crypto_scan():
+    results = scan_crypto()
+    return {"count": len(results), "results": results}
+
+
+@app.get("/crypto/tickers")
+def crypto_tickers():
+    return {"tickers": CRYPTO_TICKERS, "narratives": NARRATIVE_MAP}
+
+
 @app.get("/market")
 def market_context():
-    return compute_market_context()
+    return get_market_context()
+
+
+@app.get("/market/regime")
+def market_regime():
+    return check_market_regime()
 
 
 @app.get("/portfolio")
 def get_portfolio():
-    return {"holdings": load_json(PORTFOLIO_FILE)}
+    return {"holdings": load_portfolio()}
 
 
 @app.post("/portfolio/add")
-def add_to_portfolio(ticker: str = Query(...), entry_price: float = Query(...), shares: int = Query(1), entry_date: Optional[str] = Query(None)):
-    portfolio = load_json(PORTFOLIO_FILE)
-    portfolio.append({
-        "ticker": ticker.upper(),
-        "entry_price": entry_price,
-        "shares": shares,
-        "entry_date": entry_date or datetime.now().isoformat(),
-    })
-    save_json(PORTFOLIO_FILE, portfolio)
-    return {"status": "added", "holdings": portfolio}
+def add_to_portfolio(
+    ticker: str = Query(...),
+    entry_price: float = Query(...),
+    quantity: float = Query(1),
+    entry_date: Optional[str] = Query(None),
+    leverage: float = Query(1.0),
+):
+    return add_position(ticker, entry_price, quantity, entry_date, leverage)
 
 
 @app.delete("/portfolio/remove")
 def remove_from_portfolio(ticker: str = Query(...), index: int = Query(0)):
-    portfolio = load_json(PORTFOLIO_FILE)
-    ticker_upper = ticker.upper()
-    portfolio = [h for i, h in enumerate(portfolio) if not (h["ticker"] == ticker_upper and i == index)]
-    save_json(PORTFOLIO_FILE, portfolio)
-    return {"status": "removed", "holdings": portfolio}
+    return remove_position(ticker, index)
 
 
 @app.get("/portfolio/analyze")
-def analyze_portfolio():
-    portfolio = load_json(PORTFOLIO_FILE)
-    results = []
+def analyze_portfolio_endpoint():
+    portfolio = load_portfolio()
+    current_prices = {}
     for h in portfolio:
         try:
-            analysis = analyze(h["ticker"])
-            pnl = (analysis["current_price"] - h["entry_price"]) * h["shares"]
-            pnl_pct = (analysis["current_price"] / h["entry_price"] - 1) * 100
-            results.append({
-                **h,
-                "current_price": analysis["current_price"],
-                "pnl": round(pnl, 2),
-                "pnl_percent": round(pnl_pct, 2),
-                "trend": analysis["trend"],
-                "signal": analysis["sentiment"]["signal"],
-            })
+            df = fetch_data(h["ticker"], days=5)
+            if not df.empty:
+                current_prices[h["ticker"]] = float(df["close"].iloc[-1])
         except Exception:
-            continue
-    return {"holdings": results}
+            current_prices[h["ticker"]] = h["entry_price"]
+    return analyze_portfolio(current_prices)
 
 
 @app.get("/alerts")
 def get_alerts():
-    return {"alerts": load_json(ALERTS_FILE)}
+    return {"alerts": load_alerts()}
 
 
 @app.post("/alerts/add")
-def add_alert(ticker: str = Query(...), alert_type: str = Query(...), price_level: float = Query(...)):
-    alerts = load_json(ALERTS_FILE)
-    alerts.append({
-        "ticker": ticker.upper(),
-        "type": alert_type,
-        "price_level": price_level,
-        "created": datetime.now().isoformat(),
-        "triggered": False,
-    })
-    save_json(ALERTS_FILE, alerts)
-    return {"status": "created"}
+def add_alert_endpoint(ticker: str = Query(...), alert_type: str = Query(...), price_level: float = Query(...)):
+    return add_alert(ticker, alert_type, price_level)
 
 
 @app.post("/alerts/check")
-def check_alerts():
-    alerts = load_json(ALERTS_FILE)
-    triggered = []
-    for a in alerts:
-        if a.get("triggered"):
-            continue
+def check_alerts_endpoint():
+    portfolio = load_portfolio()
+    current_prices = {}
+    for h in portfolio:
         try:
-            current = fetch_data(a["ticker"], days=5).iloc[-1]["Close"]
-            if (a["type"] == "above" and current >= a["price_level"]) or \
-               (a["type"] == "below" and current <= a["price_level"]):
-                a["triggered"] = True
-                a["triggered_price"] = round(current, 2)
-                a["triggered_at"] = datetime.now().isoformat()
-                triggered.append(a)
+            df = fetch_data(h["ticker"], days=5)
+            if not df.empty:
+                current_prices[h["ticker"]] = float(df["close"].iloc[-1])
         except Exception:
             pass
-    save_json(ALERTS_FILE, alerts)
-    return {"triggered": triggered}
+    alerts_list = load_alerts()
+    for a in alerts_list:
+        try:
+            if not a.get("triggered"):
+                df = fetch_data(a["ticker"], days=5)
+                if not df.empty:
+                    current_prices[a["ticker"]] = float(df["close"].iloc[-1])
+        except Exception:
+            pass
+    triggered = check_alerts_fn(current_prices)
+    return {"triggered": triggered, "alerts": load_alerts()}
 
 
 @app.get("/health")
